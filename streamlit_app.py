@@ -1,6 +1,6 @@
 import streamlit as st
 
-num = '100'
+num = '200'
 
 st.title("🎈 My new app"+num)
 st.write(
