@@ -19,5 +19,5 @@ df = pd.DataFrame({
     "木曜日":["","","サーバーサイドプログラム2","サーバーサイドプログラム2"],
     "金曜日":["","ロジカルシンキング","サーバーサイドプログラム2","HR"]
 })
-st.dataframe(df,hide_index=True)
+st.dataframe(df,hide_index=True,width=1000)
 
