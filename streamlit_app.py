@@ -2,45 +2,96 @@ import streamlit as st
 import datetime as dt
 import pandas as pd
 
-st.title("Hello your schedule")
-month = dt.date.today().month
-year = dt.date.today().year
+#メインメニュー消し
+st.markdown("""
+<style>
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+header {visibility: hidden;}
+</style>
+""", unsafe_allow_html=True)
 
-if month <= 4 or month >= 9:  # 修正：前期条件
+#タイトル
+st.title("Hello your schedule")
+
+#前期後期判別
+month =dt.date.today().month
+if month >= 4 and month <= 9:
     st.text("前期週間予定表")
 else:
     st.text("後期週間予定表")
 
+
+#日別予定カラム
+times = ["1-2", "3-4", "5-6", "7-8"]
+if "week" not in st.session_state:
+    st.session_state.week = {
+        "月曜日": ["", "", "", ""],
+        "火曜日": ["", "", "", ""],
+        "水曜日": ["", "", "", ""],
+        "木曜日": ["", "", "", ""],
+        "金曜日": ["", "", "", ""],
+    }
+
+
+
+
+#表書き出し
 df = pd.DataFrame({
-    "時間割":["1-2","3-4","5-6","7-8"],
-    "月曜日":["","","キャリアデザイン3","英語"],
-    "火曜日":["クラウドコンピューティング","クラウドコンピューティング","Linux実習2","Linux実習2"],
-    "水曜日":["AIシステム開発","AIシステム開発","機械学習",""],
-    "木曜日":["","","サーバーサイドプログラム2","サーバーサイドプログラム2"],
-    "金曜日":["","ロジカルシンキング","サーバーサイドプログラム2","HR"]
+    "時間割":times,
+    "月曜日":st.session_state.week["月曜日"],
+    "火曜日":st.session_state.week["火曜日"],
+    "水曜日":st.session_state.week["水曜日"],
+    "木曜日":st.session_state.week["木曜日"],
+    "金曜日":st.session_state.week["金曜日"]
 })
 
-# DataFrame を HTML に変換
+
 html_table = df.to_html(index=False)
 
-# CSS で文字中央揃え & インデックス非表示
 styled_html = f"""
 <style>
 table {{
     border-collapse: collapse;
     width: 100%;
+    table-layout: fixed;#画面調整
 }}
+
 th, td {{
     border: 1px solid black;
-    padding: 8px;
-    text-align: center;  /* 中央揃え */
-    vertical-align: middle; /* 垂直方向も中央揃え */
+    padding: 0.2em;
+    text-align: center;
+    vertical-align: middle;
+    font-size: clamp(10px, 2.8vw, 14px);#文字調整
+    word-wrap: break-word;
 }}
+
 th:first-child, td:first-child {{
-    white-space: nowrap;  /* 最初の列だけ改行禁止 */
+    white-space: nowrap;
 }}
 </style>
 {html_table}
 """
 
-st.components.v1.html(styled_html, height=400)
+# 高さは余裕をもたせる（切れ防止）
+st.components.v1.html(styled_html, height=380)
+
+#授業変更
+with st.form("add_schedule"):
+    day = st.selectbox(
+        "曜日",
+        ["月曜日", "火曜日", "水曜日", "木曜日", "金曜日"]
+    )
+
+    time = st.selectbox(
+        "時間",
+        ["1-2", "3-4", "5-6", "7-8"]
+    )
+
+    subject = st.text_input("授業名")
+
+    submitted = st.form_submit_button("授業変更")
+time_index = times.index(time)
+
+if submitted:
+    st.session_state.week[day][time_index] = subject
