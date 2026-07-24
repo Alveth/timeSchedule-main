@@ -201,8 +201,12 @@ def generate_html1(y1, m1, str0):
 # =========================================================
 # AI解析＆実行処理
 # =========================================================
+# =========================================================
+# AI解析＆実行処理
+# =========================================================
 if st.button("AIで解析してカレンダーを作成", use_container_width=True):
-    if uploaded_file is None:
+    # accept_multiple_files=True の場合、未アップロード時は空のリスト [] になるため if not で判定
+    if not uploaded_file:
         st.error("画像をアップロードしてください。")
     else:
         with st.spinner("AIが予定表を読み取っています（年間対応）..."):
@@ -210,7 +214,8 @@ if st.button("AIで解析してカレンダーを作成", use_container_width=Tr
                 genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
                 model = genai.GenerativeModel('gemini-3.5-flash')
                 
-                img = Image.open(uploaded_file)
+                # 【修正箇所】アップロードされた複数の画像をすべて開いてリスト化する
+                images = [Image.open(f) for f in uploaded_file]
                 
                 # AIへの指示を強化（画像内の情報を最優先させる）
                 prompt = f"""
@@ -232,7 +237,10 @@ if st.button("AIで解析してカレンダーを作成", use_container_width=Tr
                 これらは予定表（またはカレンダー）の画像です。複数枚ある場合はすべての画像から情報を抽出・統合してください。
                 """
                 
-                response = model.generate_content([prompt, img])
+                # 【修正箇所】プロンプトと複数の画像をひとつのリストにまとめてAPIに渡す
+                request_data = [prompt] + images
+                response = model.generate_content(request_data)
+                
                 extracted_text = response.text.strip()
                 st.session_state.schedule_data = extracted_text
                 
