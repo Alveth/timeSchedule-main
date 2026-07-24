@@ -27,13 +27,13 @@ if "display_month" not in st.session_state:
     st.session_state.display_month = dt1.date.today().month
 
 # --- UI部分 ---
+st.info("💡 画像内に年月の記載がない場合の「補完用」として基準年を設定してください。")
 col1, col2 = st.columns(2)
 with col1:
     current_year = dt1.date.today().year
-    years = [current_year + i for i in range(3)]
-    selected_year = st.selectbox("基準となる年を選択してください", years)
-with col2:
-    selected_month = st.selectbox("最初に表示する月を選択", list(range(1, 13)))
+    years = [current_year - 1, current_year, current_year + 1, current_year + 2]
+    # もし画像に年がなかった場合に使う「保険」の年
+    fallback_year = st.selectbox("基準年（画像に年がない場合の補完用）", years, index=1)
 
 uploaded_file = st.file_uploader("予定表の画像をアップロード (PNG/JPG)", type=["png", "jpg", "jpeg"])
 
@@ -41,13 +41,10 @@ uploaded_file = st.file_uploader("予定表の画像をアップロード (PNG/J
 # Googleカレンダー用ICS作成ロジック
 # =========================================================
 def create_ics_file(schedule_text):
-    """抽出したテキストからGoogleカレンダー取り込み用のICSデータを生成する"""
     ics_content = "BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//My Calendar App//JP\n"
-    
     lines = schedule_text.strip().split('\n')
     for line in lines:
         if not line.strip(): continue
-        
         parts = line.strip().split(' ', 1)
         if len(parts) == 2:
             date_str, title = parts
@@ -63,7 +60,6 @@ def create_ics_file(schedule_text):
                 ics_content += "END:VEVENT\n"
             except ValueError:
                 continue
-                
     ics_content += "END:VCALENDAR"
     return ics_content
 
@@ -211,35 +207,52 @@ if st.button("AIで解析してカレンダーを作成", use_container_width=Tr
     else:
         with st.spinner("AIが予定表を読み取っています（年間対応）..."):
             try:
-                # Streamlit SecretsからAPIキーを読み込み
                 genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
                 model = genai.GenerativeModel('gemini-3.5-flash')
                 
-                # 画像をAIに渡す準備
                 img = Image.open(uploaded_file)
                 
-                # 年間予定表にも対応できるようにプロンプトを改良
+                # AIへの指示を強化（画像内の情報を最優先させる）
                 prompt = f"""
-                これは予定表（またはカレンダー）の画像です。基準となる年は {selected_year} 年です。
+                これは予定表（またはカレンダー）の画像です。
                 画像からすべての日付と予定を抽出し、以下のフォーマットで出力してください。
                 
                 【出力フォーマット】
                 YYYY/MM/DD 予定の内容
                 
-                【ルール】
+                【年月特定のルール（重要）】
+                1. 画像内に「年」や「月」の記載（令和〇年なども含む）がある場合は、必ずその情報を最優先して日付を特定し、西暦に変換してください。
+                2. もし画像内に「年」が一切書かれていない場合のみ、基準年である {fallback_year} 年の出来事として推測して補完してください。
+                
+                【その他のルール】
                 ・予定がない日は出力しないでください。
-                ・Markdown記号(```など)や、挨拶文は一切含めないでください。
+                ・Markdown記号(```など)や挨拶文は一切含めないでください。
                 ・必ず「年/月/日 半角スペース 予定」の形式を守ってください。
-                ・年間予定表など、複数の月が含まれる場合はすべての月を抽出してください。
+                ・複数月が含まれる場合はすべての月を抽出してください。
                 """
                 
-                # 実行
                 response = model.generate_content([prompt, img])
+                extracted_text = response.text.strip()
+                st.session_state.schedule_data = extracted_text
                 
-                # 抽出したデータをSession Stateに保存し、初期表示の年月をセット
-                st.session_state.schedule_data = response.text.strip()
-                st.session_state.display_year = int(selected_year)
-                st.session_state.display_month = int(selected_month)
+                # --- AIが抽出したデータから、自動で最初の月を見つけて画面にセットする ---
+                first_found_year = fallback_year
+                first_found_month = dt1.date.today().month # デフォルトは現在の月
+                
+                for line in extracted_text.split('\n'):
+                    parts = line.strip().split(' ', 1)
+                    if len(parts) >= 1:
+                        try:
+                            # 抽出テキストから最初の YYYY/MM/DD を解析
+                            dt = dt1.datetime.strptime(parts[0], "%Y/%m/%d")
+                            first_found_year = dt.year
+                            first_found_month = dt.month
+                            break # 最初の1件が見つかったら終了
+                        except ValueError:
+                            continue
+                
+                st.session_state.display_year = first_found_year
+                st.session_state.display_month = first_found_month
                 
                 st.success("解析成功！カレンダーを生成しました。")
                 
@@ -252,11 +265,9 @@ if st.button("AIで解析してカレンダーを作成", use_container_width=Tr
 if st.session_state.schedule_data:
     st.markdown("---")
     
-    # 抽出した生データの確認アコーディオン
     with st.expander("AIが読み取った予定データ（生テキスト）を見る"):
          st.text(st.session_state.schedule_data)
     
-    # 月の移動ボタンを配置（3列レイアウト）
     col_prev, col_title, col_next = st.columns([1, 2, 1])
     
     with col_prev:
@@ -265,10 +276,9 @@ if st.session_state.schedule_data:
             if st.session_state.display_month < 1:
                 st.session_state.display_month = 12
                 st.session_state.display_year -= 1
-            st.rerun() # 画面を再描画
+            st.rerun()
             
     with col_title:
-        # 中央に現在表示している年月を表示
         st.markdown(f"<h3 style='text-align: center;'>{st.session_state.display_year}年 {st.session_state.display_month}月</h3>", unsafe_allow_html=True)
         
     with col_next:
@@ -277,19 +287,16 @@ if st.session_state.schedule_data:
             if st.session_state.display_month > 12:
                 st.session_state.display_month = 1
                 st.session_state.display_year += 1
-            st.rerun() # 画面を再描画
+            st.rerun()
 
-    # HTMLカレンダーの生成（現在選択されている年月と、AIが抽出した全データを使用）
     final_html = generate_html1(
         st.session_state.display_year, 
         st.session_state.display_month, 
         st.session_state.schedule_data
     )
     
-    # Streamlit上に直接HTMLカレンダーを表示
     st.components.v1.html(final_html, height=700, scrolling=True)
     
-    # --- Googleカレンダー連携 ---
     st.markdown("### 連携オプション")
     ics_data = create_ics_file(st.session_state.schedule_data)
     
