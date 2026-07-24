@@ -35,7 +35,7 @@ with col1:
     # もし画像に年がなかった場合に使う「保険」の年
     fallback_year = st.selectbox("基準年（画像に年がない場合の補完用）", years, index=1)
 
-uploaded_file = st.file_uploader("予定表の画像をアップロード (PNG/JPG)", type=["png", "jpg", "jpeg"])
+uploaded_file = st.file_uploader("予定表の画像をアップロード (PNG/JPG)", type=["png", "jpg", "jpeg"],accept_multiple_files=True)
 
 # =========================================================
 # Googleカレンダー用ICS作成ロジック
