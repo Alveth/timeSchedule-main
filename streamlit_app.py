@@ -177,7 +177,7 @@ if st.button("AIで解析してカレンダーを作成", use_container_width=Tr
             try:
                 # Streamlit SecretsからAPIキーを読み込み
                 genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-                model = genai.GenerativeModel('gemini-1.5-flash')
+                model = genai.GenerativeModel('gemini-1.5-flash-latest')
                 
                 # 画像をAIに渡す準備
                 img = Image.open(uploaded_file)
