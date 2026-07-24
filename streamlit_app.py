@@ -166,6 +166,21 @@ def generate_html1(y1, m1, str0):
     cal2 = get_schedule1(y1, m1, cal1, wd1, str0) 
     return generate_html0(y1, m1, cal2) 
 
+# Streamlit SecretsからAPIキーを読み込み
+                genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+                
+                # --- 🔍ここからデバッグ調査用のコード ---
+                available_models = []
+                for m in genai.list_models():
+                    if 'generateContent' in m.supported_generation_methods:
+                        available_models.append(m.name)
+                
+                # 画面上に青いボックスで使えるモデルのリストを表示させます
+                st.info(f"【確認用】現在使えるモデル一覧: {available_models}")
+                # --- 🔍ここまで ---
+                
+                # 一旦、一番標準的で安定しているモデル名に戻します
+                model = genai.GenerativeModel('gemini-1.5-flash')
 # =========================================================
 # AI解析＆実行処理（旧 OCR.py + replace.py + main.py前半の代わり）
 # =========================================================
