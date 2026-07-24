@@ -29,6 +29,38 @@ with col2:
 
 uploaded_file = st.file_uploader("予定表の画像をアップロード (PNG/JPG)", type=["png", "jpg", "jpeg"])
 
+#googleカレンダー習得に向けて
+def create_ics_file(schedule_text):
+    """抽出したテキストからGoogleカレンダー取り込み用のICSデータを生成する"""
+    ics_content = "BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//My Calendar App//JP\n"
+    
+    # 1行ずつ読み込んで処理
+    lines = schedule_text.strip().split('\n')
+    for line in lines:
+        if not line.strip(): continue
+        
+        # 「YYYY/MM/DD 予定」を分割
+        parts = line.strip().split(' ', 1)
+        if len(parts) == 2:
+            date_str, title = parts
+            try:
+                # 日付を解析
+                dt = dt1.datetime.strptime(date_str, "%Y/%m/%d")
+                dt_start = dt.strftime("%Y%m%d")
+                # 終日予定の場合、終了日は「翌日」にする仕様
+                dt_end = (dt + dt1.timedelta(days=1)).strftime("%Y%m%d")
+
+                ics_content += "BEGIN:VEVENT\n"
+                ics_content += f"SUMMARY:{title}\n"
+                ics_content += f"DTSTART;VALUE=DATE:{dt_start}\n"
+                ics_content += f"DTEND;VALUE=DATE:{dt_end}\n"
+                ics_content += "END:VEVENT\n"
+            except ValueError:
+                # 日付の形式が違う行はスキップ
+                continue
+                
+    ics_content += "END:VCALENDAR"
+    return ics_content
 
 # =========================================================
 # カレンダーHTML生成ロジック（旧 main.py 後半のあなたのコードをそのまま流用）
@@ -211,6 +243,20 @@ if st.button("AIで解析してカレンダーを作成", use_container_width=Tr
                 
                 # Streamlit上に直接HTMLカレンダーを表示
                 st.components.v1.html(final_html, height=700, scrolling=True)
+                
+                # --- ここからGoogleカレンダー用ボタン追加 ---
+                st.markdown("### 連携オプション")
+                ics_data = create_ics_file(extracted_text)
+                
+                st.download_button(
+                    label="🗓 Googleカレンダー用ファイルをダウンロード (.ics)",
+                    data=ics_data,
+                    file_name=f"schedule_{selected_year}_{selected_month}.ics",
+                    mime="text/calendar",
+                    use_container_width=True
+                )
+                st.caption("※ダウンロードしたファイルを、Googleカレンダーの設定 ＞「インポート/エクスポート」から読み込んでください。")
+                # --- ここまで ---
                 
             except Exception as e:
                 st.error(f"エラーが発生しました: {e}")
