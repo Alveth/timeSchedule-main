@@ -303,6 +303,7 @@ if st.session_state.schedule_data:
         st.session_state.display_month, 
         st.session_state.schedule_data
     )
+    st.caption("※必ずしも全ての予定が正しく出力されているわけではありません。必ず大事な予定は確認してインポートしてください")
     
     st.components.v1.html(final_html, height=700, scrolling=True)
     
