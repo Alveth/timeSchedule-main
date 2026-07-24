@@ -7,7 +7,7 @@ import calendar as cl1
 # --- StreamlitのUI設定 ---
 st.set_page_config(page_title="月間カレンダーAI読み取り", layout="wide")
 
-# メインメニュー等を隠す（お好みで）
+# メインメニュー等を隠す
 st.markdown("""
 <style>
 #MainMenu {visibility: hidden;}
@@ -16,38 +16,44 @@ header {visibility: hidden;}
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📅 月間カレンダーAI読み取り＆生成")
+st.title("📅 カレンダーAI読み取り＆生成 (年間対応)")
 
-# --- UI部分（旧 UIdemo.py の代わり） ---
+# --- アプリの「記憶力」をセットアップ ---
+if "schedule_data" not in st.session_state:
+    st.session_state.schedule_data = ""
+if "display_year" not in st.session_state:
+    st.session_state.display_year = dt1.date.today().year
+if "display_month" not in st.session_state:
+    st.session_state.display_month = dt1.date.today().month
+
+# --- UI部分 ---
 col1, col2 = st.columns(2)
 with col1:
     current_year = dt1.date.today().year
     years = [current_year + i for i in range(3)]
-    selected_year = st.selectbox("年を選択してください", years)
+    selected_year = st.selectbox("基準となる年を選択してください", years)
 with col2:
-    selected_month = st.selectbox("月を選択してください", list(range(1, 13)))
+    selected_month = st.selectbox("最初に表示する月を選択", list(range(1, 13)))
 
 uploaded_file = st.file_uploader("予定表の画像をアップロード (PNG/JPG)", type=["png", "jpg", "jpeg"])
 
-#googleカレンダー習得に向けて
+# =========================================================
+# Googleカレンダー用ICS作成ロジック
+# =========================================================
 def create_ics_file(schedule_text):
     """抽出したテキストからGoogleカレンダー取り込み用のICSデータを生成する"""
     ics_content = "BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//My Calendar App//JP\n"
     
-    # 1行ずつ読み込んで処理
     lines = schedule_text.strip().split('\n')
     for line in lines:
         if not line.strip(): continue
         
-        # 「YYYY/MM/DD 予定」を分割
         parts = line.strip().split(' ', 1)
         if len(parts) == 2:
             date_str, title = parts
             try:
-                # 日付を解析
                 dt = dt1.datetime.strptime(date_str, "%Y/%m/%d")
                 dt_start = dt.strftime("%Y%m%d")
-                # 終日予定の場合、終了日は「翌日」にする仕様
                 dt_end = (dt + dt1.timedelta(days=1)).strftime("%Y%m%d")
 
                 ics_content += "BEGIN:VEVENT\n"
@@ -56,14 +62,13 @@ def create_ics_file(schedule_text):
                 ics_content += f"DTEND;VALUE=DATE:{dt_end}\n"
                 ics_content += "END:VEVENT\n"
             except ValueError:
-                # 日付の形式が違う行はスキップ
                 continue
                 
     ics_content += "END:VCALENDAR"
     return ics_content
 
 # =========================================================
-# カレンダーHTML生成ロジック（旧 main.py 後半のあなたのコードをそのまま流用）
+# カレンダーHTML生成ロジック
 # =========================================================
 def generate_calendar1(y1, m1): 
     cal1 = [""]*42 
@@ -103,7 +108,6 @@ def get_schedule1(y1, m1, cal1, wd1, str0):
 
 def generate_html0(y1, m1, cal1): 
     m0 = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"] 
-    # ※Streamlit上で単一表示するため、先月・翌月のリンク(<a>タグ)は外してシンプルにしています
     str1 = '''
 <style media="screen"> 
 .header0 {{ height: 30px; line-height: 30px; text-align: left; font-size: 40px; padding: 10px; margin: 0; display: inline-block; font-weight: bold; }}
@@ -199,13 +203,13 @@ def generate_html1(y1, m1, str0):
     return generate_html0(y1, m1, cal2) 
 
 # =========================================================
-# AI解析＆実行処理（旧 OCR.py + replace.py + main.py前半の代わり）
+# AI解析＆実行処理
 # =========================================================
 if st.button("AIで解析してカレンダーを作成", use_container_width=True):
     if uploaded_file is None:
         st.error("画像をアップロードしてください。")
     else:
-        with st.spinner("AIがカレンダーを読み取っています（数秒かかります）..."):
+        with st.spinner("AIが予定表を読み取っています（年間対応）..."):
             try:
                 # Streamlit SecretsからAPIキーを読み込み
                 genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
@@ -214,10 +218,10 @@ if st.button("AIで解析してカレンダーを作成", use_container_width=Tr
                 # 画像をAIに渡す準備
                 img = Image.open(uploaded_file)
                 
-                # AIへの指示（プロンプト）
+                # 年間予定表にも対応できるようにプロンプトを改良
                 prompt = f"""
-                これは{selected_year}年{selected_month}月のカレンダー画像です。
-                画像から日付と予定を抽出し、以下のフォーマットで出力してください。
+                これは予定表（またはカレンダー）の画像です。基準となる年は {selected_year} 年です。
+                画像からすべての日付と予定を抽出し、以下のフォーマットで出力してください。
                 
                 【出力フォーマット】
                 YYYY/MM/DD 予定の内容
@@ -226,37 +230,74 @@ if st.button("AIで解析してカレンダーを作成", use_container_width=Tr
                 ・予定がない日は出力しないでください。
                 ・Markdown記号(```など)や、挨拶文は一切含めないでください。
                 ・必ず「年/月/日 半角スペース 予定」の形式を守ってください。
+                ・年間予定表など、複数の月が含まれる場合はすべての月を抽出してください。
                 """
                 
                 # 実行
                 response = model.generate_content([prompt, img])
-                extracted_text = response.text.strip()
+                
+                # 抽出したデータをSession Stateに保存し、初期表示の年月をセット
+                st.session_state.schedule_data = response.text.strip()
+                st.session_state.display_year = int(selected_year)
+                st.session_state.display_month = int(selected_month)
                 
                 st.success("解析成功！カレンダーを生成しました。")
                 
-                # 抽出したテキストの中身をアコーディオン（折りたたみ）で確認できるようにする
-                with st.expander("AIが読み取った予定データ（生テキスト）を見る"):
-                    st.text(extracted_text)
-
-                # あなたのコードを使ってHTMLカレンダーを生成
-                final_html = generate_html1(int(selected_year), int(selected_month), extracted_text)
-                
-                # Streamlit上に直接HTMLカレンダーを表示
-                st.components.v1.html(final_html, height=700, scrolling=True)
-                
-                # --- ここからGoogleカレンダー用ボタン追加 ---
-                st.markdown("### 連携オプション")
-                ics_data = create_ics_file(extracted_text)
-                
-                st.download_button(
-                    label="🗓 Googleカレンダー用ファイルをダウンロード (.ics)",
-                    data=ics_data,
-                    file_name=f"schedule_{selected_year}_{selected_month}.ics",
-                    mime="text/calendar",
-                    use_container_width=True
-                )
-                st.caption("※ダウンロードしたファイルを、Googleカレンダーの設定 ＞「インポート/エクスポート」から読み込んでください。")
-                # --- ここまで ---
-                
             except Exception as e:
                 st.error(f"エラーが発生しました: {e}")
+
+# =========================================================
+# カレンダー表示 ＆ 月移動ナビゲーション
+# =========================================================
+if st.session_state.schedule_data:
+    st.markdown("---")
+    
+    # 抽出した生データの確認アコーディオン
+    with st.expander("AIが読み取った予定データ（生テキスト）を見る"):
+         st.text(st.session_state.schedule_data)
+    
+    # 月の移動ボタンを配置（3列レイアウト）
+    col_prev, col_title, col_next = st.columns([1, 2, 1])
+    
+    with col_prev:
+        if st.button("⬅️ 先月", use_container_width=True):
+            st.session_state.display_month -= 1
+            if st.session_state.display_month < 1:
+                st.session_state.display_month = 12
+                st.session_state.display_year -= 1
+            st.rerun() # 画面を再描画
+            
+    with col_title:
+        # 中央に現在表示している年月を表示
+        st.markdown(f"<h3 style='text-align: center;'>{st.session_state.display_year}年 {st.session_state.display_month}月</h3>", unsafe_allow_html=True)
+        
+    with col_next:
+        if st.button("翌月 ➡️", use_container_width=True):
+            st.session_state.display_month += 1
+            if st.session_state.display_month > 12:
+                st.session_state.display_month = 1
+                st.session_state.display_year += 1
+            st.rerun() # 画面を再描画
+
+    # HTMLカレンダーの生成（現在選択されている年月と、AIが抽出した全データを使用）
+    final_html = generate_html1(
+        st.session_state.display_year, 
+        st.session_state.display_month, 
+        st.session_state.schedule_data
+    )
+    
+    # Streamlit上に直接HTMLカレンダーを表示
+    st.components.v1.html(final_html, height=700, scrolling=True)
+    
+    # --- Googleカレンダー連携 ---
+    st.markdown("### 連携オプション")
+    ics_data = create_ics_file(st.session_state.schedule_data)
+    
+    st.download_button(
+        label="🗓 読み取った全予定をGoogleカレンダー用ファイルでダウンロード (.ics)",
+        data=ics_data,
+        file_name=f"schedule_all.ics",
+        mime="text/calendar",
+        use_container_width=True
+    )
+    st.caption("※ダウンロードしたファイルを、Googleカレンダーの設定 ＞「インポート/エクスポート」から読み込んでください。")
