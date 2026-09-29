@@ -3,14 +3,11 @@ import google.generativeai as genai
 from PIL import Image
 import datetime as dt1
 import calendar as cl1
-import os.path
 
 # --- Google Calendar API 用のインポート ---
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
 
 # Googleカレンダーへのフルアクセス権限
 SCOPES = ['https://www.googleapis.com/auth/calendar']
@@ -36,24 +33,22 @@ if "display_month" not in st.session_state:
 
 
 # =========================================================
-# 順序1：API取得（認証＆サービス作成）
+# 順序1：API取得（Streamlit Secretsを使用したクラウド認証）
 # =========================================================
 def get_calendar_service():
-    """Google Calendar APIに接続"""
-    creds = None
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            if not os.path.exists('credentials.json'):
-                st.error("credentials.json が見つかりません。配置を確認してください。")
-                st.stop()
-            flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
+    """Streamlit Secrets から Google Calendar API 認証情報を読み込む"""
+    if "google_oauth" not in st.secrets:
+        st.error("Streamlit の Secrets に [google_oauth] が設定されていません。")
+        st.stop()
+        
+    # st.secrets の辞書情報から Credentials を生成
+    oauth_info = dict(st.secrets["google_oauth"])
+    creds = Credentials.from_authorized_user_info(oauth_info, SCOPES)
+    
+    # トークン期限切れの場合は自動更新
+    if creds and creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+        
     return build('calendar', 'v3', credentials=creds)
 
 try:
@@ -250,7 +245,6 @@ if st.button("📸 写真から予定を読み込んで登録", use_container_wi
                 
                 extracted_text = response.text.strip()
                 
-                # 解析結果をGoogle Calendarに直接書き込み
                 first_date = None
                 for line in extracted_text.split('\n'):
                     parts = line.strip().split(' ', 1)
@@ -263,14 +257,11 @@ if st.button("📸 写真から予定を読み込んで登録", use_container_wi
                         except ValueError:
                             continue
                 
-                # 読み込んだ月が表示されるよう設定
                 if first_date:
                     st.session_state.display_year = first_date.year
                     st.session_state.display_month = first_date.month
 
                 st.success("Googleカレンダーへの登録が完了しました！")
-                
-                # 順序5：反映後、再実行（再読み込みして最新データを画面に表示）
                 st.rerun()
                 
             except Exception as e:
@@ -294,7 +285,7 @@ with col_add:
         if new_summary:
             add_calendar_event(cal_service, new_date.strftime("%Y/%m/%d"), new_summary)
             st.success("予定を追加しました。")
-            st.rerun() # 再読み込み
+            st.rerun()
         else:
             st.warning("タイトルを入力してください。")
 
@@ -314,11 +305,11 @@ with col_edit:
             if st.button("更新する"):
                 update_calendar_event(cal_service, selected_event['id'], edit_date, edit_summary)
                 st.success("予定を更新しました。")
-                st.rerun() # 再読み込み
+                st.rerun()
         with c2:
             if st.button("削除する", type="primary"):
                 delete_calendar_event(cal_service, selected_event['id'])
                 st.success("予定を削除しました。")
-                st.rerun() # 再読み込み
+                st.rerun()
     else:
         st.info("この月に予定はありません。")
