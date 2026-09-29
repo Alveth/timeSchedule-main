@@ -3,11 +3,21 @@ import google.generativeai as genai
 from PIL import Image
 import datetime as dt1
 import calendar as cl1
+import os.path
+
+# --- Google Calendar API 用のインポート ---
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+
+# Googleカレンダーへのフルアクセス権限
+SCOPES = ['https://www.googleapis.com/auth/calendar']
 
 # --- StreamlitのUI設定 ---
-st.set_page_config(page_title="月間カレンダーAI読み取り", layout="wide")
+st.set_page_config(page_title="GoogleカレンダーAI連携", layout="wide")
 
-# メインメニュー等を隠す
 st.markdown("""
 <style>
 #MainMenu {visibility: hidden;}
@@ -16,55 +26,93 @@ header {visibility: hidden;}
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📅 カレンダーAI読み取り＆生成 (年間対応)")
+st.title("📅 Googleカレンダー連携 ＆ AI読み取り")
 
 # --- アプリの「記憶力」をセットアップ ---
-if "schedule_data" not in st.session_state:
-    st.session_state.schedule_data = ""
 if "display_year" not in st.session_state:
     st.session_state.display_year = dt1.date.today().year
 if "display_month" not in st.session_state:
     st.session_state.display_month = dt1.date.today().month
-
-# --- UI部分 ---
-st.info("💡 画像内に年月の記載がない場合の「補完用」として基準年を設定してください。")
-col1, col2 = st.columns(2)
-with col1:
-    current_year = dt1.date.today().year
-    years = [current_year - 1, current_year, current_year + 1, current_year + 2]
-    # もし画像に年がなかった場合に使う「保険」の年
-    fallback_year = st.selectbox("基準年（画像に年がない場合の補完用）", years, index=1)
-
-uploaded_file = st.file_uploader("予定表の画像をアップロード (PNG/JPG)", type=["png", "jpg", "jpeg"],accept_multiple_files=True)
+if "events_data" not in st.session_state:
+    st.session_state.events_data = [] # Googleカレンダーから取得した予定リスト
 
 # =========================================================
-# Googleカレンダー用ICS作成ロジック
+# 1. Google Calendar API 連携ロジック
 # =========================================================
-def create_ics_file(schedule_text):
-    ics_content = "BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//My Calendar App//JP\n"
-    lines = schedule_text.strip().split('\n')
-    for line in lines:
-        if not line.strip(): continue
-        parts = line.strip().split(' ', 1)
-        if len(parts) == 2:
-            date_str, title = parts
-            try:
-                dt = dt1.datetime.strptime(date_str, "%Y/%m/%d")
-                dt_start = dt.strftime("%Y%m%d")
-                dt_end = (dt + dt1.timedelta(days=1)).strftime("%Y%m%d")
+def get_calendar_service():
+    """Google Calendar APIの認証とサービス構築"""
+    creds = None
+    # token.json はアクセス・リフレッシュトークンを保存するファイル
+    if os.path.exists('token.json'):
+        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            if not os.path.exists('credentials.json'):
+                st.error("credentials.json が見つかりません。Google Cloud Consoleからダウンロードして配置してください。")
+                st.stop()
+            flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
+            creds = flow.run_local_server(port=0)
+        with open('token.json', 'w') as token:
+            token.write(creds.to_json())
+    return build('calendar', 'v3', credentials=creds)
 
-                ics_content += "BEGIN:VEVENT\n"
-                ics_content += f"SUMMARY:{title}\n"
-                ics_content += f"DTSTART;VALUE=DATE:{dt_start}\n"
-                ics_content += f"DTEND;VALUE=DATE:{dt_end}\n"
-                ics_content += "END:VEVENT\n"
-            except ValueError:
-                continue
-    ics_content += "END:VCALENDAR"
-    return ics_content
+def fetch_events(service, year, month):
+    """指定した年月の予定をGoogleカレンダーから取得"""
+    start_time = dt1.datetime(year, month, 1).isoformat() + 'Z'
+    end_day = cl1.monthrange(year, month)[1]
+    end_time = dt1.datetime(year, month, end_day, 23, 59, 59).isoformat() + 'Z'
+    
+    events_result = service.events().list(
+        calendarId='primary', timeMin=start_time, timeMax=end_time,
+        singleEvents=True, orderBy='startTime').execute()
+    
+    events = events_result.get('items', [])
+    parsed_events = []
+    for event in events:
+        start = event['start'].get('dateTime', event['start'].get('date'))
+        # 日付フォーマットを YYYY/MM/DD に統一
+        date_str = start[:10].replace("-", "/") 
+        parsed_events.append({
+            'id': event['id'],
+            'date': date_str,
+            'summary': event.get('summary', '(タイトルなし)')
+        })
+    return parsed_events
+
+def add_calendar_event(service, date_str, summary):
+    """Googleカレンダーに予定を追加"""
+    dt = dt1.datetime.strptime(date_str, "%Y/%m/%d")
+    event = {
+        'summary': summary,
+        'start': {'date': dt.strftime("%Y-%m-%d")},
+        'end': {'date': (dt + dt1.timedelta(days=1)).strftime("%Y-%m-%d")},
+    }
+    service.events().insert(calendarId='primary', body=event).execute()
+
+def update_calendar_event(service, event_id, date_str, summary):
+    """Googleカレンダーの予定を変更"""
+    dt = dt1.datetime.strptime(date_str, "%Y/%m/%d")
+    event = service.events().get(calendarId='primary', eventId=event_id).execute()
+    event['summary'] = summary
+    event['start'] = {'date': dt.strftime("%Y-%m-%d")}
+    event['end'] = {'date': (dt + dt1.timedelta(days=1)).strftime("%Y-%m-%d")}
+    service.events().update(calendarId='primary', eventId=event_id, body=event).execute()
+
+def delete_calendar_event(service, event_id):
+    """Googleカレンダーの予定を削除"""
+    service.events().delete(calendarId='primary', eventId=event_id).execute()
+
+# --- サービスの初期化 ---
+try:
+    cal_service = get_calendar_service()
+except Exception as e:
+    st.error(f"Googleカレンダーの認証に失敗しました: {e}")
+    st.stop()
 
 # =========================================================
-# カレンダーHTML生成ロジック
+# カレンダーHTML生成ロジック (辞書リスト対応に改修)
 # =========================================================
 def generate_calendar1(y1, m1): 
     cal1 = [""]*42 
@@ -74,28 +122,20 @@ def generate_calendar1(y1, m1):
     wd1 = wd1 + 1 
     cal_max1 = cl1.monthrange(y1, m1)[1] 
     for i1 in range(cal_max1): 
-        str1 = str(i1+1) 
-        i2 = i1 + wd1 
-        cal1[i2] = str1 
+        cal1[i1 + wd1] = str(i1+1) 
     return wd1, cal1 
 
-def get_schedule1(y1, m1, cal1, wd1, str0): 
+def get_schedule_from_events(y1, m1, cal1, wd1, events_list): 
+    """Googleカレンダーから取得した辞書リストをHTMLカレンダーに割り当てる"""
     cal2 = [""]*len(cal1) 
-    a1 = str0.strip().split("\n") 
-    for i1 in range(len(a1)): 
-        if not a1[i1]: continue
-        a2 = a1[i1].strip().split(" ")
-        a3 = a2[0].split("/") 
-        if len(a3) == 3: 
-            y2 = a3[0] 
-            m2 = a3[1] 
-            if "*" in y2 or int(y2) == y1: 
-                if "*" in m2 or int(m2) == m1: 
-                    d1 = int(a3[2])
-                    a4 = a2 
-                    del a4[0] 
-                    str1 = str(" ".join(a4)).strip() 
-                    cal2[d1-1 + wd1] = cal2[d1-1 + wd1] + str1 + ""
+    for ev in events_list:
+        date_parts = ev['date'].split('/')
+        if len(date_parts) == 3:
+            ey, em, ed = int(date_parts[0]), int(date_parts[1]), int(date_parts[2])
+            if ey == y1 and em == m1:
+                # 同じ日に複数予定がある場合は改行でつなぐ
+                cal2[ed-1 + wd1] += ev['summary'] + "<br>"
+                
     cal3 = [] 
     for i1 in range(len(cal1)): 
        cal3.append(cal1[i1]) 
@@ -104,218 +144,177 @@ def get_schedule1(y1, m1, cal1, wd1, str0):
 
 def generate_html0(y1, m1, cal1): 
     m0 = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"] 
-    str1 = '''
+    str1 = f'''
 <style media="screen"> 
 .header0 {{ height: 30px; line-height: 30px; text-align: left; font-size: 40px; padding: 10px; margin: 0; display: inline-block; font-weight: bold; }}
 table {{ table-layout: fixed; width: 100%; }} 
 th {{ text-align: center; padding: 0px; }} 
-td {{ text-align: left; vertical-align: top; padding: 5px; height: 60px; }}
+td {{ text-align: left; vertical-align: top; padding: 5px; height: 75px; }}
 .calendar0 {{ background: #EEEEE8; }} 
 .header1 {{ font-size: 13px; padding: 5px; }}
 .calendar_table1 {{ height: 60%; padding: 5px; }}
 .days1 {{ background: #FFFFFF; }}
 .day1 {{ font-weight: bold; font-size: 14px; }} 
-.content1 {{ border-radius: 3px; background: #f0e68c; font-size: 14px; font-family: 'Meiryo UI'; color: #000000; }} 
+.content1 {{ border-radius: 3px; background: #f0e68c; font-size: 12px; font-family: 'Meiryo UI'; color: #000000; padding: 2px; }} 
 .w1 {{ color: #FF0000; background: #FFF0F0; }} 
 .w7 {{ color: #0000A0; background: #F6F0FF; }}
 </style> 
 <div class="calendar0">
   <div class="calendar1">
-    <table> 
-      <tr> 
-        <td><div class="header0">{_str01} </div>{_str02} {_str03}</td> 
-      </tr> 
-    </table> 
-'''.format(_str01=m1, _str02=y1, _str03=m0[m1-1]).strip() 
-
+    <table><tr><td><div class="header0">{m1} </div>{y1} {m0[m1-1]}</td></tr></table> 
+'''
     str2 = '''
     <table class="header1">
-      <tr><th>Sunday</th><th>Monday</th><th>Tuesday</th><th>Wednesday</th><th>Thursday</th><th>Friday</th><th>Saturday</th></tr>
+      <tr><th>Sun</th><th>Mon</th><th>Tue</th><th>Wed</th><th>Thu</th><th>Fri</th><th>Sat</th></tr>
     </table> 
     <table class="calendar_table1">
-      <tr class="days1">
-        <td class = w1><div class=day1>{0[0]}</div><br><div class=content1>{0[1]}</div></td>
-        <td class = w2><div class=day1>{0[2]}</div><br><div class=content1>{0[3]}</div></td>
-        <td class = w3><div class=day1>{0[4]}</div><br><div class=content1>{0[5]}</div></td>
-        <td class = w4><div class=day1>{0[6]}</div><br><div class=content1>{0[7]}</div></td>
-        <td class = w5><div class=day1>{0[8]}</div><br><div class=content1>{0[9]}</div></td>
-        <td class = w6><div class=day1>{0[10]}</div><br><div class=content1>{0[11]}</div></td>
-        <td class = w7><div class=day1>{0[12]}</div><br><div class=content1>{0[13]}</div></td>
-      </tr>
-      <tr class="days1">
-        <td class = w1><div class=day1>{0[14]}</div><br><div class=content1>{0[15]}</div></td>
-        <td class = w2><div class=day1>{0[16]}</div><br><div class=content1>{0[17]}</div></td>
-        <td class = w3><div class=day1>{0[18]}</div><br><div class=content1>{0[19]}</div></td>
-        <td class = w4><div class=day1>{0[20]}</div><br><div class=content1>{0[21]}</div></td>
-        <td class = w5><div class=day1>{0[22]}</div><br><div class=content1>{0[23]}</div></td>
-        <td class = w6><div class=day1>{0[24]}</div><br><div class=content1>{0[25]}</div></td>
-        <td class = w7><div class=day1>{0[26]}</div><br><div class=content1>{0[27]}</div></td>
-      </tr>
-      <tr class="days1">
-        <td class = w1><div class=day1>{0[28]}</div><br><div class=content1>{0[29]}</div></td>
-        <td class = w2><div class=day1>{0[30]}</div><br><div class=content1>{0[31]}</div></td>
-        <td class = w3><div class=day1>{0[32]}</div><br><div class=content1>{0[33]}</div></td>
-        <td class = w4><div class=day1>{0[34]}</div><br><div class=content1>{0[35]}</div></td>
-        <td class = w5><div class=day1>{0[36]}</div><br><div class=content1>{0[37]}</div></td>
-        <td class = w6><div class=day1>{0[38]}</div><br><div class=content1>{0[39]}</div></td>
-        <td class = w7><div class=day1>{0[40]}</div><br><div class=content1>{0[41]}</div></td>
-      </tr>
-      <tr class="days1">
-        <td class = w1><div class=day1>{0[42]}</div><br><div class=content1>{0[43]}</div></td>
-        <td class = w2><div class=day1>{0[44]}</div><br><div class=content1>{0[45]}</div></td>
-        <td class = w3><div class=day1>{0[46]}</div><br><div class=content1>{0[47]}</div></td>
-        <td class = w4><div class=day1>{0[48]}</div><br><div class=content1>{0[49]}</div></td>
-        <td class = w5><div class=day1>{0[50]}</div><br><div class=content1>{0[51]}</div></td>
-        <td class = w6><div class=day1>{0[52]}</div><br><div class=content1>{0[53]}</div></td>
-        <td class = w7><div class=day1>{0[54]}</div><br><div class=content1>{0[55]}</div></td>
-      </tr>
-      <tr class="days1">
-        <td class = w1><div class=day1>{0[56]}</div><br><div class=content1>{0[57]}</div></td>
-        <td class = w2><div class=day1>{0[58]}</div><br><div class=content1>{0[59]}</div></td>
-        <td class = w3><div class=day1>{0[60]}</div><br><div class=content1>{0[61]}</div></td>
-        <td class = w4><div class=day1>{0[62]}</div><br><div class=content1>{0[63]}</div></td>
-        <td class = w5><div class=day1>{0[64]}</div><br><div class=content1>{0[65]}</div></td>
-        <td class = w6><div class=day1>{0[66]}</div><br><div class=content1>{0[67]}</div></td>
-        <td class = w7><div class=day1>{0[68]}</div><br><div class=content1>{0[69]}</div></td>
-      </tr>
-      <tr class="days1">
-        <td class = w1><div class=day1>{0[70]}</div><br><div class=content1>{0[71]}</div></td>
-        <td class = w2><div class=day1>{0[72]}</div><br><div class=content1>{0[73]}</div></td>
-        <td class = w3><div class=day1>{0[74]}</div><br><div class=content1>{0[75]}</div></td>
-        <td class = w4><div class=day1>{0[76]}</div><br><div class=content1>{0[77]}</div></td>
-        <td class = w5><div class=day1>{0[78]}</div><br><div class=content1>{0[79]}</div></td>
-        <td class = w6><div class=day1>{0[80]}</div><br><div class=content1>{0[81]}</div></td>
-        <td class = w7><div class=day1>{0[82]}</div><br><div class=content1>{0[83]}</div></td>
-      </tr>
-    </table>
-  </div>
-</div>
-'''.format(cal1).strip() 
+    '''
+    # 6週分の行を生成
+    for week in range(6):
+        str2 += '<tr class="days1">'
+        for day in range(7):
+            idx = (week * 7 + day) * 2
+            css_class = "w1" if day == 0 else "w7" if day == 6 else ""
+            str2 += f'<td class="{css_class}"><div class="day1">{cal1[idx]}</div><br><div class="content1">{cal1[idx+1]}</div></td>'
+        str2 += '</tr>'
+    str2 += '</table></div></div>'
     return str1 + str2 
 
-def generate_html1(y1, m1, str0): 
-    wd1, cal1 = generate_calendar1(y1, m1) 
-    cal2 = get_schedule1(y1, m1, cal1, wd1, str0) 
-    return generate_html0(y1, m1, cal2) 
+# =========================================================
+# UI: 画像アップロードとAI解析
+# =========================================================
+st.info("💡 画像内に年月の記載がない場合の補完用として基準年を設定してください。")
+col1, col2 = st.columns(2)
+with col1:
+    current_year = dt1.date.today().year
+    years = [current_year - 1, current_year, current_year + 1, current_year + 2]
+    fallback_year = st.selectbox("基準年（画像に年がない場合の補完用）", years, index=1)
 
-# =========================================================
-# AI解析＆実行処理
-# =========================================================
-# =========================================================
-# AI解析＆実行処理
-# =========================================================
-if st.button("AIで解析してカレンダーを作成", use_container_width=True):
-    # accept_multiple_files=True の場合、未アップロード時は空のリスト [] になるため if not で判定
+uploaded_file = st.file_uploader("予定表の画像をアップロード (PNG/JPG)", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
+
+if st.button("AIで解析してカレンダーに即時反映", use_container_width=True):
     if not uploaded_file:
         st.error("画像をアップロードしてください。")
     else:
-        with st.spinner("AIが予定表を読み取っています（年間対応）..."):
+        with st.spinner("AIが予定表を読み取り、Googleカレンダーに登録しています..."):
             try:
                 genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
                 model = genai.GenerativeModel('gemini-3.5-flash')
-                
-                # 【修正箇所】アップロードされた複数の画像をすべて開いてリスト化する
                 images = [Image.open(f) for f in uploaded_file]
                 
-                # AIへの指示を強化（画像内の情報を最優先させる）
                 prompt = f"""
-                これは予定表（またはカレンダー）の画像です。
-                画像からすべての日付と予定を抽出し、以下のフォーマットで出力してください。
-                
+                これは予定表（またはカレンダー）の画像です。画像からすべての日付と予定を抽出し、以下のフォーマットで出力してください。
                 【出力フォーマット】
                 YYYY/MM/DD 予定の内容
-                
-                【年月特定のルール（重要）】
-                1. 画像内に「年」や「月」の記載（令和〇年なども含む）がある場合は、必ずその情報を最優先して日付を特定し、西暦に変換してください。
-                2. もし画像内に「年」が一切書かれていない場合のみ、基準年である {fallback_year} 年の出来事として推測して補完してください。
-                
-                【その他のルール】
-                ・予定がない日は出力しないでください。
-                ・Markdown記号(```など)や挨拶文は一切含めないでください。
-                ・必ず「年/月/日 半角スペース 予定」の形式を守ってください。
-                ・複数月が含まれる場合はすべての月を抽出してください。
-                これらは予定表（またはカレンダー）の画像です。複数枚ある場合はすべての画像から情報を抽出・統合してください。
+                【ルール】
+                1. 「年」が一切書かれていない場合は、基準年 {fallback_year} 年として補完してください。
+                2. Markdown記号や挨拶文は一切含めず、「年/月/日 半角スペース 予定」の形式のみ出力してください。
                 """
-                
-                # 【修正箇所】プロンプトと複数の画像をひとつのリストにまとめてAPIに渡す
                 request_data = [prompt] + images
                 response = model.generate_content(request_data)
                 
                 extracted_text = response.text.strip()
-                st.session_state.schedule_data = extracted_text
                 
-                # --- AIが抽出したデータから、自動で最初の月を見つけて画面にセットする ---
-                first_found_year = fallback_year
-                first_found_month = dt1.date.today().month # デフォルトは現在の月
-                
+                # Google Calendarに即時反映
                 for line in extracted_text.split('\n'):
                     parts = line.strip().split(' ', 1)
-                    if len(parts) >= 1:
+                    if len(parts) == 2:
                         try:
-                            # 抽出テキストから最初の YYYY/MM/DD を解析
+                            # 形式チェック
                             dt = dt1.datetime.strptime(parts[0], "%Y/%m/%d")
-                            first_found_year = dt.year
-                            first_found_month = dt.month
-                            break # 最初の1件が見つかったら終了
+                            add_calendar_event(cal_service, parts[0], parts[1])
+                            # 最初に見つかった月を表示月としてセット
+                            st.session_state.display_year = dt.year
+                            st.session_state.display_month = dt.month
                         except ValueError:
                             continue
                 
-                st.session_state.display_year = first_found_year
-                st.session_state.display_month = first_found_month
-                
-                st.success("解析成功！カレンダーを生成しました。")
+                st.success("Googleカレンダーへの登録が完了しました！")
+                st.rerun() # 画面をリロードして最新データを表示
                 
             except Exception as e:
                 st.error(f"エラーが発生しました: {e}")
 
 # =========================================================
+# Googleカレンダーからのデータ読み込み (毎回実行)
+# =========================================================
+st.session_state.events_data = fetch_events(cal_service, st.session_state.display_year, st.session_state.display_month)
+
+# =========================================================
 # カレンダー表示 ＆ 月移動ナビゲーション
 # =========================================================
-if st.session_state.schedule_data:
-    st.markdown("---")
-    
-    with st.expander("AIが読み取った予定データ（生テキスト）を見る"):
-         st.text(st.session_state.schedule_data)
-    
-    col_prev, col_title, col_next = st.columns([1, 2, 1])
-    
-    with col_prev:
-        if st.button("⬅️ 先月", use_container_width=True):
-            st.session_state.display_month -= 1
-            if st.session_state.display_month < 1:
-                st.session_state.display_month = 12
-                st.session_state.display_year -= 1
-            st.rerun()
-            
-    with col_title:
-        st.markdown(f"<h3 style='text-align: center;'>{st.session_state.display_year}年 {st.session_state.display_month}月</h3>", unsafe_allow_html=True)
+st.markdown("---")
+col_prev, col_title, col_next = st.columns([1, 2, 1])
+
+with col_prev:
+    if st.button("⬅️ 先月", use_container_width=True):
+        st.session_state.display_month -= 1
+        if st.session_state.display_month < 1:
+            st.session_state.display_month = 12
+            st.session_state.display_year -= 1
+        st.rerun()
         
-    with col_next:
-        if st.button("翌月 ➡️", use_container_width=True):
-            st.session_state.display_month += 1
-            if st.session_state.display_month > 12:
-                st.session_state.display_month = 1
-                st.session_state.display_year += 1
+with col_title:
+    st.markdown(f"<h3 style='text-align: center;'>{st.session_state.display_year}年 {st.session_state.display_month}月</h3>", unsafe_allow_html=True)
+    
+with col_next:
+    if st.button("翌月 ➡️", use_container_width=True):
+        st.session_state.display_month += 1
+        if st.session_state.display_month > 12:
+            st.session_state.display_month = 1
+            st.session_state.display_year += 1
+        st.rerun()
+
+# HTMLカレンダーの生成と表示
+wd1, cal1_template = generate_calendar1(st.session_state.display_year, st.session_state.display_month) 
+cal_data = get_schedule_from_events(st.session_state.display_year, st.session_state.display_month, cal1_template, wd1, st.session_state.events_data) 
+final_html = generate_html0(st.session_state.display_year, st.session_state.display_month, cal_data)
+
+st.components.v1.html(final_html, height=650, scrolling=True)
+
+# =========================================================
+# 追加要件: 予定の個別追加・変更・削除
+# =========================================================
+st.markdown("### 📝 予定の管理 (個別追加・変更・削除)")
+
+col_add, col_edit = st.columns(2)
+
+# --- 個別追加 ---
+with col_add:
+    st.markdown("#### 新規追加")
+    new_date = st.date_input("日付", dt1.date.today())
+    new_summary = st.text_input("予定のタイトル")
+    if st.button("追加する"):
+        if new_summary:
+            add_calendar_event(cal_service, new_date.strftime("%Y/%m/%d"), new_summary)
+            st.success("予定を追加しました。")
             st.rerun()
+        else:
+            st.warning("タイトルを入力してください。")
 
-    final_html = generate_html1(
-        st.session_state.display_year, 
-        st.session_state.display_month, 
-        st.session_state.schedule_data
-    )
-    
-    st.components.v1.html(final_html, height=700, scrolling=True)
-
-    st.caption("※必ずしも全ての予定が正しく出力されているわけではありません。必ず大事な予定は確認してください")
-    
-    st.markdown("### 連携オプション")
-    ics_data = create_ics_file(st.session_state.schedule_data)
-    
-    st.download_button(
-        label="🗓 読み取った全予定をGoogleカレンダー用ファイルでダウンロード (.ics)",
-        data=ics_data,
-        file_name=f"schedule_all.ics",
-        mime="text/calendar",
-        use_container_width=True
-    )
-    st.caption("※ダウンロードしたファイルを、Googleカレンダーの設定 ＞「インポート/エクスポート」から読み込んでください。")
+# --- 変更・削除 ---
+with col_edit:
+    st.markdown(f"#### 編集・削除 ({st.session_state.display_month}月の予定)")
+    if st.session_state.events_data:
+        # セレクトボックス用に予定リストをフォーマット
+        event_options = {f"{ev['date']} - {ev['summary']}": ev for ev in st.session_state.events_data}
+        selected_event_label = st.selectbox("操作する予定を選択", list(event_options.keys()))
+        selected_event = event_options[selected_event_label]
+        
+        # 編集用フォーム
+        edit_date = st.text_input("日付を変更 (YYYY/MM/DD)", value=selected_event['date'])
+        edit_summary = st.text_input("タイトルを変更", value=selected_event['summary'])
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("更新する"):
+                update_calendar_event(cal_service, selected_event['id'], edit_date, edit_summary)
+                st.success("予定を更新しました。")
+                st.rerun()
+        with c2:
+            if st.button("削除する", type="primary"):
+                delete_calendar_event(cal_service, selected_event['id'])
+                st.success("予定を削除しました。")
+                st.rerun()
+    else:
+        st.info("この月に予定はありません。")
