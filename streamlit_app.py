@@ -25,11 +25,13 @@ header {visibility: hidden;}
 
 st.title("📅 Googleカレンダー連携 ＆ AI読み取り")
 
-# 表示年月（ステート管理）
+# ステート管理（表示年月・直前追加イベント履歴）
 if "display_year" not in st.session_state:
     st.session_state.display_year = dt1.date.today().year
 if "display_month" not in st.session_state:
     st.session_state.display_month = dt1.date.today().month
+if "last_added_events" not in st.session_state:
+    st.session_state.last_added_events = []  # 直前に写真から追加されたイベント情報の保持用
 
 
 # =========================================================
@@ -41,11 +43,9 @@ def get_calendar_service():
         st.error("Streamlit の Secrets に [google_oauth] が設定されていません。")
         st.stop()
         
-    # st.secrets の辞書情報から Credentials を生成
     oauth_info = dict(st.secrets["google_oauth"])
     creds = Credentials.from_authorized_user_info(oauth_info, SCOPES)
     
-    # トークン期限切れの場合は自動更新
     if creds and creds.expired and creds.refresh_token:
         creds.refresh(Request())
         
@@ -82,14 +82,15 @@ def fetch_events(service, year, month):
     return parsed_events
 
 def add_calendar_event(service, date_str, summary):
-    """Googleカレンダーに予定を追加"""
+    """Googleカレンダーに予定を追加し、追加されたイベントIDを返す"""
     dt = dt1.datetime.strptime(date_str, "%Y/%m/%d")
     event = {
         'summary': summary,
         'start': {'date': dt.strftime("%Y-%m-%d")},
         'end': {'date': (dt + dt1.timedelta(days=1)).strftime("%Y-%m-%d")},
     }
-    service.events().insert(calendarId='primary', body=event).execute()
+    created_event = service.events().insert(calendarId='primary', body=event).execute()
+    return created_event.get('id')
 
 def update_calendar_event(service, event_id, date_str, summary):
     """Googleカレンダーの予定を変更"""
@@ -209,10 +210,26 @@ st.components.v1.html(final_html, height=650, scrolling=True)
 
 
 # =========================================================
-# 順序4：写真から読み込むボタンで既存のプログラムを実行
+# 順序4：写真から読み込む ＆ 取り消し（Undo）機能
 # =========================================================
 st.markdown("---")
 st.markdown("### 📷 写真から予定を読み込んで追加")
+
+# --- 直前に写真から取り込んだ予定を取り消すボタン（データがある場合のみ表示） ---
+if st.session_state.last_added_events:
+    event_count = len(st.session_state.last_added_events)
+    st.info(f"💡 直前に写真から {event_count} 件の予定を追加しました。")
+    if st.button(f"↩️ 直前に写真から追加した {event_count} 件の予定を取り消す", type="primary", use_container_width=True):
+        with st.spinner("追加した予定を取り消し中..."):
+            for ev in st.session_state.last_added_events:
+                try:
+                    delete_calendar_event(cal_service, ev['id'])
+                except Exception as e:
+                    pass
+            # 履歴のクリア
+            st.session_state.last_added_events = []
+            st.success("写真から追加した予定を取り消しました。")
+            st.rerun()
 
 col1, col2 = st.columns([1, 2])
 with col1:
@@ -245,23 +262,35 @@ if st.button("📸 写真から予定を読み込んで登録", use_container_wi
                 
                 extracted_text = response.text.strip()
                 
+                # 新しい追加結果の保持リストを初期化
+                new_added_events = []
                 first_date = None
+                
                 for line in extracted_text.split('\n'):
                     parts = line.strip().split(' ', 1)
                     if len(parts) == 2:
                         try:
                             dt = dt1.datetime.strptime(parts[0], "%Y/%m/%d")
-                            add_calendar_event(cal_service, parts[0], parts[1])
+                            # イベントを追加し、生成されたIDを取得
+                            event_id = add_calendar_event(cal_service, parts[0], parts[1])
+                            new_added_events.append({
+                                'id': event_id,
+                                'date': parts[0],
+                                'summary': parts[1]
+                            })
                             if not first_date:
                                 first_date = dt
                         except ValueError:
                             continue
                 
+                # 直前追加リストを更新
+                st.session_state.last_added_events = new_added_events
+
                 if first_date:
                     st.session_state.display_year = first_date.year
                     st.session_state.display_month = first_date.month
 
-                st.success("Googleカレンダーへの登録が完了しました！")
+                st.success(f"{len(new_added_events)} 件の予定を登録しました！間違えた場合は下の『取り消す』ボタンで元に戻せます。")
                 st.rerun()
                 
             except Exception as e:
